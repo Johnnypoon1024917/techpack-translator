@@ -154,13 +154,25 @@ python tests/test_pipeline.py      # automated checks
 
 ## Discussion questions
 
-These are the industrial questions the current design leaves open:
+These are the formal questions the current design leaves open. A qualified response should derive the bound, the threshold, or the identification condition.
 
-1. With fewer than 50 labeled packs and no guarantee that future layouts stay within the current support, would you deploy a detector for \( R \) at all, or keep the user mask and spend the modeling budget on something else? What evidence would reverse that decision?
+**1. Finite-sample generalization**
 
-2. Suppose a false negative on \( R \) (artwork altered) triggers a full reprint, while a false positive only delays translation by one human review. Derive the decision threshold on detector confidence that minimizes expected cost, and state the single parameter you would need from the factory to set it.
+Let \(\mathcal{H}\) be a detector class with VC dimension \(d = \mathrm{VC}(\mathcal{H})\). Let \(S\) be \(n\) labeled packs drawn i.i.d. from \(D\). Let \(\mathrm{err}_D(h)\) be true error on a new factory and \(\mathrm{err}_S(h)\) be empirical error.
 
-3. The pixel constraint is already satisfied by the final copy. Under what measured condition on terminology consistency, review load, and reprint rate would you accept the risk of an end-to-end vision-language model that can no longer give a hard guarantee inside \( R \)?
+State the PAC bound you are using. For \(n < 50\), what is the numerical value of the bound, and is it vacuous? What \(n\) would you need to guarantee \(\mathrm{err}_D(h) \le \mathrm{err}_S(h) + 0.01\) with probability \(0.95\)?
+
+**2. Bayes-optimal decision and calibration**
+
+Let \(Y = 1\) if a region is artwork \(R\), \(Y = 0\) otherwise. Let \(L(0,1) = C_{FN}\) be the cost of a false negative (reprint) and \(L(1,0) = C_{FP}\) be the cost of a false positive (one human review).
+
+Derive the Bayes-optimal classifier. Then prove that thresholding an uncalibrated score \(f(x)\) at that threshold does not in general minimize expected risk. What distribution-free procedure gives a finite-sample guarantee on \(P(\text{artwork overwritten})\) without assuming calibration?
+
+**3. Causal attribution in the pipeline**
+
+Model the pipeline as a structural causal model \(X \to O \to T \to R \to Y\), where \(O\) is OCR output, \(T\) is translation, \(R\) is rendering, and \(Y\) is final quality. Let \(U_O, U_T, U_R\) be exogenous noise.
+
+If end-to-end quality \(Y\) improves after you change \(T\), how do you identify the causal effect of \(T\) on \(Y\), holding \(O\) fixed? Show why the observational contrast \(\mathbb{E}[Y \mid T = 1] - \mathbb{E}[Y \mid T = 0]\) does not identify it, and state the \(do\)-intervention you need.
 
 ## Notes
 
