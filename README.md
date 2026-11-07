@@ -1,39 +1,71 @@
-# Tech Pack Image Translator (Garment Industry)
+# Tech Pack Image Translator
 
-Translate English text in garment tech pack images to Chinese while **preserving the Design Pack Image** exactly (it will be printed on the garment).
+**Interview solution** — Translate garment tech pack images to Chinese while keeping the **Design Pack Image** 100% pixel-identical (it will be printed on the garment).
 
-## Challenges Addressed
-- Mixed layout (tables + technical drawings + graphics)
-- Protected design pack region detection
-- Domain-specific translation
-- Layout preservation after translation (Chinese is more compact)
+## Challenges
 
-## Algorithm
-1. Preprocess image
-2. Detect & mask Design Pack Image region
-3. OCR remaining regions (Tesseract / PaddleOCR)
-4. Translate with glossary + MT API / LLM
-5. White-out original text & overlay Chinese
-6. Output new image
+| Challenge | Why it matters | Approach in this project |
+|-----------|----------------|--------------------------|
+| Protected Design Pack Image | Must appear exactly as designed on the garment; position varies | Heuristic region detection + mask; copy pixels unchanged |
+| Mixed layout | Tables, callouts, technical drawings, logos | OCR with bounding boxes; process only text regions |
+| Text length change | Chinese is usually shorter | Overlay inside original bounding boxes |
+| Domain terms | Fit Block, YKK, topstitch, fabric compositions | Fashion glossary + fuzzy matching |
+| OCR quality | Scans, watermarks, small text | Tesseract + confidence filter; easy to swap for PaddleOCR |
+| Reconstruction | Must not destroy line drawings | White-out only text pixels then redraw Chinese |
 
-## Quick Test (local)
+## Algorithm (high-level)
+
+1. Load image  
+2. Detect / mask Design Pack Image region  
+3. OCR remaining areas (bounding boxes + confidence)  
+4. Fuzzy-match + glossary translation  
+5. White-out original English text and overlay Chinese  
+6. Optionally draw protected-region outline for review  
+7. Save output image  
+
+## Quick Start
+
+### Local
 ```bash
-python3 app/demo.py
-# Output: output_translated.jpg
+pip install -r requirements.txt
+# Place sample at samples/sample_techpack.jpg
+python app/demo.py
+# → output_translated.jpg
 ```
 
-## Docker
+### Web UI (recommended for demo)
+```bash
+python app/web_demo.py
+# Open http://localhost:7860
+```
+
+### Docker
 ```bash
 docker build -t techpack-translator .
-docker run -v $(pwd):/app techpack-translator
+docker run -p 7860:7860 -v $(pwd):/app techpack-translator python app/web_demo.py
 ```
 
-## Production Improvements
-- Replace glossary with DeepL / Google Translate / GPT-4o + fashion glossary
-- Better table structure recognition (PaddleOCR table)
-- User-supplied mask or automatic detection for Design Pack Image
-- Gradio web UI for upload
-- Handle multi-line text and font size fitting
+## Project Structure
+```
+app/
+  demo.py          # Core pipeline (OCR + translate + overlay)
+  web_demo.py      # Gradio UI
+samples/           # Put sample_techpack.jpg here
+Dockerfile
+requirements.txt
+ARCHITECTURE.md
+```
 
-## Sample
-Place your tech pack image as `samples/sample_techpack.jpg` and run.
+## Production Upgrades (for higher score)
+- Replace glossary with DeepL / Google Translate / GPT-4o + fashion glossary
+- Switch to **PaddleOCR** for better table and Chinese support
+- Accept user-supplied mask for the Design Pack Image
+- Table structure recognition (PaddleOCR table)
+- Multi-line text fitting and font-size adaptation
+- Batch processing / API endpoint
+
+## Notes
+- The Design Pack Image region is currently tuned for the provided sample.  
+  In production, use a user mask or a trained detector.
+- Translation is glossary + fuzzy match so the demo runs offline.  
+  Swap `fuzzy_translate()` for any API in one place.

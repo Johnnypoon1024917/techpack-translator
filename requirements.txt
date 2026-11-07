@@ -2,3 +2,4 @@ pytesseract
 pillow
 opencv-python-headless
 numpy
+gradio

@@ -15,4 +15,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app/ ./app/
 COPY samples/ ./samples/
 
+# Default: CLI demo. Override with web UI:
+# docker run -p 7860:7860 ... python app/web_demo.py
 CMD ["python", "app/demo.py"]
