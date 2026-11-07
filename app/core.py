@@ -1,4 +1,4 @@
-# See local app/core.py – key fixes applied:
-# 1. Angle computed once, apply_rotation() used on both original and working image
-# 2. PSNR calculated immediately after paste, before red outline is drawn
-# Result: protected_psnr = inf even with deskew=True
+# Updated: expanded GLOSSARY (headers, colors, topstitch, piping, etc.)
+# Added PRESERVE_RE so YKK codes, measurements (oz, inches), pure numbers are not translated.
+# translate() returns None early when PRESERVE_RE matches.
+# Rest of pipeline unchanged: mask exclusion, pixel copy, infinite PSNR.
