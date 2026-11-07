@@ -1,248 +1,121 @@
-"""
-Production-oriented Tech Pack Translator with special-case handling.
-Designed for Crystal Group–style global apparel operations.
-
-Special cases handled:
-- Design pack overlap → exclude intersecting boxes
-- Low confidence / handwriting → flag, do not auto-translate
-- Already Chinese → skip
-- Very small text → skip or flag
-- Watermarks / stamps → size + position filter
-- Long text overflow → adaptive font size
-- Qwen API failure → automatic glossary fallback
-- Colored / low-contrast text → optional contrast boost
-"""
-
-import os
-import re
-import logging
-from typing import Optional, Tuple, Dict, Any, List
+"""Core pipeline with advanced hooks (deskew, inpaint, super-res, RAG, PSNR, table grouping)."""
+import os, re, logging
+from typing import Optional, Dict, Any
 from pathlib import Path
-
-import cv2
-import numpy as np
-import pytesseract
+import cv2, numpy as np, pytesseract
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance
 from difflib import SequenceMatcher
+from .advanced import deskew_and_detect_rotation, group_into_table_cells, inpaint_text_regions, simple_super_resolution, protected_region_psnr, SimpleRAG
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-GLOSSARY = {
-    "Style Name:": "款式名称:",
-    "Placement": "位置",
-    "Quantity": "数量",
-    "Yards": "码",
-    "Beige": "米色",
-    "Black": "黑色",
-    "White": "白色",
-    "Natural": "自然色",
-    "Each": "个",
-    "Clear": "透明",
-    "Packaging": "包装",
-    "N/A": "不适用",
-    "USE HEAVY THREAD FOR ALL TOPSTITCHING": "所有明线使用重线",
-    "SINGLE NEEDLE TOPSTITCH": "单针明线",
-    "ZIG ZAG TOPSTITCH": "之字明线",
-    "DOUBLE NEEDLE TOPSTITCH": "双针明线",
-    "Design pack image": "设计包装图",
-}
-
+GLOSSARY = {"Placement": "位置", "Quantity": "数量", "Yards": "码", "Beige": "米色", "Black": "黑色", "White": "白色", "Natural": "自然色", "Each": "个", "Clear": "透明", "Packaging": "包装", "N/A": "不适用", "Design pack image": "设计包装图"}
 CHINESE_RE = re.compile(r"[\u4e00-\u9fff]")
+rag = SimpleRAG()
+for k,v in GLOSSARY.items(): rag.add(k,v)
 
-def contains_chinese(text: str) -> bool:
-    return bool(CHINESE_RE.search(text))
+def contains_chinese(t): return bool(CHINESE_RE.search(t))
 
 class Translator:
-    def __init__(self, backend: str = "glossary", api_key: Optional[str] = None):
+    def __init__(self, backend="glossary", api_key=None, use_rag=True):
         self.backend = backend.lower()
-        self.api_key = api_key or os.getenv("DASHSCOPE_API_KEY") or os.getenv("TRANSLATION_API_KEY")
-
-    def translate(self, text: str) -> Optional[str]:
+        self.api_key = api_key or os.getenv("DASHSCOPE_API_KEY")
+        self.use_rag = use_rag
+    def translate(self, text):
         text = text.strip()
-        if not text or contains_chinese(text):
-            return None
-        if self.backend == "qwen":
-            return self._qwen(text)
-        return self._glossary(text)
-
-    def _glossary(self, text: str, threshold: float = 0.70) -> Optional[str]:
-        if text in GLOSSARY:
-            return GLOSSARY[text]
-        best_ratio, best = 0.0, None
-        for k, v in GLOSSARY.items():
-            ratio = SequenceMatcher(None, text.lower(), k.lower()).ratio()
-            if ratio > best_ratio:
-                best_ratio, best = ratio, v
-        return best if best_ratio >= threshold else None
-
-    def _qwen(self, text: str) -> Optional[str]:
-        if not self.api_key:
-            return self._glossary(text)
+        if not text or contains_chinese(text): return None
+        if self.use_rag: rag.retrieve(text)
+        return self._qwen(text) if self.backend=="qwen" else self._glossary(text)
+    def _glossary(self, text, threshold=0.70):
+        if text in GLOSSARY: return GLOSSARY[text]
+        best = max(((SequenceMatcher(None, text.lower(), k.lower()).ratio(), v) for k,v in GLOSSARY.items()), default=(0,None))
+        return best[1] if best[0] >= threshold else None
+    def _qwen(self, text):
+        if not self.api_key: return self._glossary(text)
         try:
             import dashscope
             from dashscope import Generation
             dashscope.api_key = self.api_key
-            system_prompt = (
-                "You are a professional apparel technical translator. "
-                "Translate the English tech-pack phrase into concise Simplified Chinese. "
-                "Keep terms consistent (topstitch=明线, fit block=版型, YKK unchanged). "
-                "Output ONLY the Chinese translation."
-            )
-            resp = Generation.call(
-                model="qwen-plus",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": text},
-                ],
-                result_format="message",
-            )
-            if resp.status_code == 200:
-                return resp.output.choices[0].message.content.strip()
-        except Exception as e:
-            logger.error(f"Qwen failed ({e}) → glossary fallback")
+            resp = Generation.call(model="qwen-plus", messages=[{"role":"system","content":"Apparel translator. topstitch=明线. Output only Chinese."},{"role":"user","content":text}], result_format="message")
+            if resp.status_code==200: return resp.output.choices[0].message.content.strip()
+        except Exception as e: logger.error(e)
         return self._glossary(text)
 
 def detect_design_pack_region(img, mask_path=None, auto_right_ratio=0.62):
-    h, w = img.shape[:2]
+    h,w = img.shape[:2]
     if mask_path and os.path.exists(mask_path):
-        mask_img = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
-        mask_img = cv2.resize(mask_img, (w, h))
-        _, mask = cv2.threshold(mask_img, 127, 255, cv2.THRESH_BINARY)
-        ys, xs = np.where(mask > 0)
-        bbox = (int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())) if len(xs) else (0, 0, 0, 0)
-        return mask, bbox
-    x1 = int(w * auto_right_ratio)
-    y1, x2, y2 = 5, w - 10, int(h * 0.55)
-    mask = np.zeros((h, w), dtype=np.uint8)
-    mask[y1:y2, x1:x2] = 255
-    return mask, (x1, y1, x2, y2)
+        m = cv2.resize(cv2.imread(mask_path,0), (w,h))
+        _, mask = cv2.threshold(m,127,255,cv2.THRESH_BINARY)
+        ys,xs = np.where(mask>0)
+        return mask, (int(xs.min()),int(ys.min()),int(xs.max()),int(ys.max())) if len(xs) else (0,0,0,0)
+    x1=int(w*auto_right_ratio); mask=np.zeros((h,w),np.uint8); mask[5:int(h*0.55), x1:w-10]=255
+    return mask, (x1,5,w-10,int(h*0.55))
 
 def get_chinese_font(size=16):
-    candidates = [
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-    ]
-    for path in candidates:
-        if os.path.exists(path):
-            try:
-                return ImageFont.truetype(path, size)
-            except Exception:
-                continue
+    for p in ["/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc","/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"]:
+        if os.path.exists(p):
+            try: return ImageFont.truetype(p, size)
+            except: pass
     return ImageFont.load_default()
 
-def adaptive_font_size(draw, text, max_width, max_height, base_size=16):
-    low, high = 8, base_size
-    best = 8
-    while low <= high:
-        mid = (low + high) // 2
-        font = get_chinese_font(mid)
-        bbox = draw.textbbox((0, 0), text, font=font)
-        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        if tw <= max_width and th <= max_height:
-            best = mid
-            low = mid + 1
-        else:
-            high = mid - 1
+def adaptive_font_size(draw, text, max_w, max_h, base=16):
+    low,high,best=8,base,8
+    while low<=high:
+        mid=(low+high)//2
+        f=get_chinese_font(mid)
+        bb=draw.textbbox((0,0),text,font=f)
+        if bb[2]-bb[0]<=max_w and bb[3]-bb[1]<=max_h: best=mid; low=mid+1
+        else: high=mid-1
     return get_chinese_font(best)
 
-def process_techpack(
-    input_path: str,
-    output_path: str,
-    mask_path: Optional[str] = None,
-    translator: Optional[Translator] = None,
-    conf_threshold: float = 45.0,
-    min_text_height: int = 8,
-    show_protected: bool = True,
-    enhance_contrast: bool = False,
-) -> Dict[str, Any]:
-    if translator is None:
-        translator = Translator(backend="glossary")
-
-    pil_img = Image.open(input_path).convert("RGB")
-    if enhance_contrast:
-        pil_img = ImageEnhance.Contrast(pil_img).enhance(1.4)
-
-    img_cv = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
-    design_mask, design_bbox = detect_design_pack_region(img_cv, mask_path)
-    h, w = design_mask.shape
-
-    data = pytesseract.image_to_data(pil_img, lang="eng", output_type=pytesseract.Output.DICT)
-
-    boxes = []
-    flagged = []
-
+def process_techpack(input_path, output_path, mask_path=None, translator=None, conf_threshold=45.0, min_text_height=8, show_protected=True, enhance_contrast=False, deskew=False, super_res=False, use_inpaint=False, compute_metrics=True):
+    if translator is None: translator=Translator()
+    pil=Image.open(input_path).convert("RGB")
+    original=pil.copy()
+    if super_res and min(pil.size)<800: pil=simple_super_resolution(pil)
+    if deskew: pil,_=deskew_and_detect_rotation(pil)
+    if enhance_contrast: pil=ImageEnhance.Contrast(pil).enhance(1.4)
+    img_cv=cv2.cvtColor(np.array(pil),cv2.COLOR_RGB2BGR)
+    design_mask, design_bbox=detect_design_pack_region(img_cv, mask_path)
+    h,w=design_mask.shape
+    data=pytesseract.image_to_data(pil, lang="eng", output_type=pytesseract.Output.DICT)
+    boxes,flagged=[],[]
     for i in range(len(data["text"])):
-        try:
-            conf = float(data["conf"][i])
-        except (ValueError, TypeError):
-            continue
-        text = data["text"][i].strip()
-        if not text:
-            continue
-
-        x, y, bw, bh = data["left"][i], data["top"][i], data["width"][i], data["height"][i]
-        cx, cy = x + bw // 2, y + bh // 2
-
-        if not (0 <= cy < h and 0 <= cx < w):
-            continue
-        if design_mask[cy, cx] > 0:
-            continue
-        if bh < min_text_height:
-            flagged.append({"text": text, "reason": "too_small", "conf": conf})
-            continue
-        if conf < conf_threshold:
-            flagged.append({"text": text, "reason": "low_confidence", "conf": conf})
-            continue
-        if bw > w * 0.6 or text.lower() in {"page", "page 1", "confidential"}:
-            flagged.append({"text": text, "reason": "watermark_like", "conf": conf})
-            continue
-        if contains_chinese(text):
-            continue
-
-        boxes.append({"text": text, "x": x, "y": y, "w": bw, "h": bh, "conf": conf})
-
-    out = pil_img.copy()
-    draw = ImageDraw.Draw(out)
-
-    translated_count = 0
-    translations = []
+        try: conf=float(data["conf"][i])
+        except: continue
+        text=data["text"][i].strip()
+        if not text: continue
+        x,y,bw,bh=data["left"][i],data["top"][i],data["width"][i],data["height"][i]
+        cx,cy=x+bw//2,y+bh//2
+        if not (0<=cy<h and 0<=cx<w) or design_mask[cy,cx]>0: continue
+        if bh<min_text_height: flagged.append({"text":text,"reason":"too_small"}); continue
+        if conf<conf_threshold: flagged.append({"text":text,"reason":"low_confidence"}); continue
+        if bw>w*0.6 or text.lower() in {"page","page 1"}: flagged.append({"text":text,"reason":"watermark"}); continue
+        if contains_chinese(text): continue
+        boxes.append({"text":text,"x":x,"y":y,"w":bw,"h":bh,"conf":conf})
+    table_rows=group_into_table_cells(boxes)
+    if use_inpaint and boxes: pil=inpaint_text_regions(pil, boxes)
+    out=pil.copy(); draw=ImageDraw.Draw(out)
+    translated=0; translations=[]
     for b in boxes:
-        trans = translator.translate(b["text"])
-        if not trans:
-            flagged.append({"text": b["text"], "reason": "no_translation", "conf": b["conf"]})
-            continue
-
-        font = adaptive_font_size(draw, trans, b["w"] + 4, b["h"] + 2, base_size=16)
-        draw.rectangle(
-            [b["x"] - 1, b["y"] - 1, b["x"] + b["w"] + 2, b["y"] + b["h"] + 2],
-            fill="white",
-        )
-        draw.text((b["x"], b["y"]), trans, fill="black", font=font)
-        translated_count += 1
-        translations.append({"original": b["text"], "translated": trans})
-
-    # Hard pixel-perfect copy of protected region (safety net)
-    if design_bbox[2] > design_bbox[0]:
-        x1, y1, x2, y2 = design_bbox
-        region = pil_img.crop((x1, y1, x2, y2))
-        out.paste(region, (x1, y1))
+        trans=translator.translate(b["text"])
+        if not trans: flagged.append({"text":b["text"],"reason":"no_translation"}); continue
+        font=adaptive_font_size(draw, trans, b["w"]+4, b["h"]+2)
+        if not use_inpaint: draw.rectangle([b["x"]-1,b["y"]-1,b["x"]+b["w"]+2,b["y"]+b["h"]+2], fill="white")
+        draw.text((b["x"],b["y"]), trans, fill="black", font=font)
+        translated+=1; translations.append({"original":b["text"],"translated":trans}); rag.add(b["text"], trans)
+    if design_bbox[2]>design_bbox[0]:
+        x1,y1,x2,y2=design_bbox
+        region=original.crop((x1,y1,x2,y2))
+        out.paste(region, (x1,y1))
         if show_protected:
-            draw = ImageDraw.Draw(out)
+            draw=ImageDraw.Draw(out)
             draw.rectangle(design_bbox, outline="red", width=3)
-            font_small = get_chinese_font(12)
-            draw.text((x1 + 8, y1 + 8), "PROTECTED", fill="red", font=font_small)
-
+            draw.text((x1+8,y1+8), "PROTECTED", fill="red", font=get_chinese_font(12))
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     out.save(output_path, quality=95)
-
-    result = {
-        "backend": translator.backend,
-        "boxes_considered": len(boxes) + len(flagged),
-        "translated": translated_count,
-        "flagged": flagged,
-        "protected_bbox": design_bbox,
-        "translations": translations,
-    }
-    logger.info(f"Done: translated={translated_count}, flagged={len(flagged)}")
-    return result
+    metrics={}
+    if compute_metrics and design_bbox[2]>design_bbox[0]:
+        metrics["protected_psnr"]=protected_region_psnr(original, out, design_bbox)
+    return {"translated":translated, "flagged":flagged, "table_rows":len(table_rows), "protected_bbox":design_bbox, "translations":translations, "metrics":metrics}
