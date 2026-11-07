@@ -1,11 +1,18 @@
 """
 Production-oriented Tech Pack Translator
 Designed for Crystal Group–style global apparel operations.
+
+Translation backends:
+- glossary (offline)
+- qwen     (Alibaba Qwen via DashScope – recommended for Chinese)
+- deepl / openai (placeholders)
 """
+
 import os
 import logging
 from typing import Optional, Tuple, Dict, Any
 from pathlib import Path
+
 import cv2
 import numpy as np
 import pytesseract
@@ -17,38 +24,12 @@ logger = logging.getLogger(__name__)
 
 GLOSSARY = {
     "Style Name:": "款式名称:",
-    "Brand Name/Logo:": "品牌名称/标志:",
-    "Designer's Name:": "设计师姓名:",
-    "Style Number:": "款号:",
-    "Season/Release:": "季节/发布:",
-    "Fit Block Reference:": "版型参考:",
-    "Factory Details:": "工厂详情:",
-    "Target Volume:": "目标产量:",
-    "Size Range/Sample:": "尺码范围/样品:",
-    "Contact Information:": "联系信息:",
-    "Pattern File Name:": "纸样文件名:",
-    "Colorways:": "配色:",
-    "Product Category:": "产品类别:",
-    "Style Description:": "款式描述:",
-    "Description": "描述",
     "Placement": "位置",
-    "Color Details": "颜色详情",
     "Quantity": "数量",
-    "Cost": "成本",
-    "Unit of Measure": "计量单位",
-    "Main Fabric": "主面料",
-    "Blue Light": "浅蓝",
-    "Mocha Mousse": "摩卡慕斯",
-    "Ultimate Gray": "终极灰",
-    "As Per Requirement": "按要求",
     "Yards": "码",
-    "All Seams": "所有缝线",
-    "DTM": "染整匹配",
-    "Armholes": "袖窿",
     "Beige": "米色",
-    "Back Neck": "后领",
-    "White": "白色",
     "Black": "黑色",
+    "White": "白色",
     "Natural": "自然色",
     "Each": "个",
     "Clear": "透明",
@@ -59,21 +40,22 @@ GLOSSARY = {
     "ZIG ZAG TOPSTITCH": "之字明线",
     "DOUBLE NEEDLE TOPSTITCH": "双针明线",
     "Design pack image": "设计包装图",
-    "Additional Notes & Comments:": "附加备注与评论:",
 }
 
 class Translator:
+    """Pluggable translation backend. Qwen is recommended for Chinese quality."""
+
     def __init__(self, backend: str = "glossary", api_key: Optional[str] = None):
-        self.backend = backend
-        self.api_key = api_key or os.getenv("TRANSLATION_API_KEY")
+        self.backend = backend.lower()
+        self.api_key = api_key or os.getenv("DASHSCOPE_API_KEY") or os.getenv("TRANSLATION_API_KEY")
 
     def translate(self, text: str) -> Optional[str]:
         text = text.strip()
         if not text:
             return None
-        if self.backend == "glossary":
-            return self._glossary(text)
-        return self._glossary(text)  # fallback; extend for DeepL/OpenAI
+        if self.backend == "qwen":
+            return self._qwen(text)
+        return self._glossary(text)
 
     def _glossary(self, text: str, threshold: float = 0.70) -> Optional[str]:
         if text in GLOSSARY:
@@ -84,6 +66,35 @@ class Translator:
             if ratio > best_ratio:
                 best_ratio, best = ratio, v
         return best if best_ratio >= threshold else None
+
+    def _qwen(self, text: str) -> Optional[str]:
+        if not self.api_key:
+            logger.warning("No DASHSCOPE_API_KEY, falling back to glossary")
+            return self._glossary(text)
+        try:
+            import dashscope
+            from dashscope import Generation
+            dashscope.api_key = self.api_key
+            system_prompt = (
+                "You are a professional translator for the garment / apparel industry. "
+                "Translate the following English tech-pack text into accurate, concise Simplified Chinese. "
+                "Keep technical terms consistent (e.g. topstitch = 明线, fit block = 版型, YKK remains YKK). "
+                "Output ONLY the Chinese translation, nothing else."
+            )
+            response = Generation.call(
+                model="qwen-plus",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": text},
+                ],
+                result_format="message",
+            )
+            if response.status_code == 200:
+                return response.output.choices[0].message.content.strip()
+            return self._glossary(text)
+        except Exception as e:
+            logger.error(f"Qwen failed: {e}")
+            return self._glossary(text)
 
 def detect_design_pack_region(img, mask_path=None, auto_right_ratio=0.62):
     h, w = img.shape[:2]
@@ -115,7 +126,7 @@ def get_chinese_font(size=16):
 
 def process_techpack(input_path, output_path, mask_path=None, translator=None, conf_threshold=40.0, show_protected=True):
     if translator is None:
-        translator = Translator()
+        translator = Translator(backend="glossary")
     pil_img = Image.open(input_path).convert("RGB")
     img_cv = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
     design_mask, design_bbox = detect_design_pack_region(img_cv, mask_path)
@@ -151,8 +162,7 @@ def process_techpack(input_path, output_path, mask_path=None, translator=None, c
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     out.save(output_path, quality=95)
     return {
-        "input": input_path,
-        "output": output_path,
+        "backend": translator.backend,
         "boxes_detected": len(boxes),
         "translated": translated_count,
         "protected_bbox": design_bbox,

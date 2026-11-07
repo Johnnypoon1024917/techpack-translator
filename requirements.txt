@@ -6,3 +6,4 @@ pytesseract
 pillow
 opencv-python-headless
 numpy
+dashscope
