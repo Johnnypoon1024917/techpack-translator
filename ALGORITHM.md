@@ -1,59 +1,69 @@
 # Approach
 
-## The constraint that matters
+## Problem
 
-The design artwork (the image that will be printed or embroidered on the garment) must be pixel-identical in the output.  
-Everything else — tables, notes, callouts — can be translated to Chinese.
+Let \( I \) be the input image.  
+Let \( R \) be the set of pixels that belong to the design artwork (the part printed on the garment).
 
-In the code this is enforced at the end: the original pixels of that region are copied back over whatever was drawn.  
-PSNR inside the region is infinite when this is done correctly.
+We want an output image \( I' \) such that:
+
+\[
+I'(x,y) = I(x,y) \quad \forall (x,y) \in R
+\]
+
+and all relevant text outside \( R \) is replaced by its Chinese translation.
+
+The equality is enforced by copying those pixels from the original at the end of the pipeline.  
+When the copy is correct, PSNR inside \( R \) is infinite.
 
 ## Pipeline
 
-1. Load the image. Keep an untouched copy.
-2. Optional: deskew or upscale a working copy. The same geometric transform is applied to the untouched copy so coordinates still match later.
-3. Find the design artwork region (user-supplied mask, or a simple right-side heuristic).
-4. Run OCR on the working image. Throw away any box whose center is inside the artwork region, or that is too small, low-confidence, already Chinese, or looks like a watermark.
-5. Translate the remaining text. Glossary first; Qwen if an API key is present. Fall back to glossary on failure.
-6. Draw the Chinese text (font size reduced if it would overflow the box).
-7. Paste the original artwork pixels back.
-8. Optionally compute PSNR on the artwork region (measured before any red outline is drawn).
+1. Keep an untouched copy of \( I \).
+2. Optional geometric transforms (deskew, upscale) are applied to a working copy.  
+   The same transform is applied to the untouched copy so the coordinates of \( R \) still match.
+3. Obtain \( R \) (user mask or right-side heuristic).
+4. OCR → set of boxes \( \{(b_i, s_i, c_i)\} \).
+5. Discard any box where the center lies in \( R \), or \( c_i \) is low, or the box is too small, or \( s_i \) already contains Chinese, or it looks like a watermark.
+6. Translate the rest.
+7. Draw Chinese text.
+8. Copy original pixels of \( R \) back into the output.
+9. (Optional) compute PSNR on \( R \) before any debug overlay is drawn.
 
-## Translation details
+## Translation
 
-- Small fixed glossary for common terms (placement, quantity, colors, topstitch types, etc.).
-- Fuzzy match so minor OCR differences still hit.
-- Qwen (`qwen-plus`) with a short prompt that fixes a few apparel terms (topstitch → 明线, fit block → 版型, leave YKK codes alone).
-- If the same English phrase appears more than once, the same Chinese is reused.
+Glossary lookup (exact then fuzzy) followed by Qwen when a key is present.  
+On failure, glossary is used.  
+Repeated English strings reuse the same Chinese string.
 
 ## Special cases
 
-| Case | What the code does |
-|------|--------------------|
-| Box overlaps the design artwork | Dropped |
-| Already contains Chinese | Skipped |
-| Height < 8 px or low OCR confidence | Flagged, not translated |
-| Looks like a page number or watermark | Skipped |
-| Translation longer than the box | Font size reduced |
-| Qwen call fails or no key | Glossary fallback |
-| Deskew enabled | Same rotation applied to both copies so the final paste lines up |
+| Case | Status | What happens |
+|------|--------|--------------|
+| Box center inside artwork | Handled | Box dropped |
+| Already Chinese | Handled | Skipped |
+| Very small text (< 8 px) | Handled | Flagged, not translated |
+| Low OCR confidence | Handled | Flagged, not translated |
+| Watermark / page number style | Handled | Skipped |
+| Translation overflows box | Handled | Font size reduced |
+| Qwen failure / no key | Handled | Glossary fallback |
+| Deskew | Handled | Identical rotation on both copies; PSNR stays infinite |
+| Colored text, low contrast | Partial | Optional contrast boost exists; not automatic |
+| Rotated or vertical text | Partial | Global deskew only; per-box rotation not implemented |
+| Merged table cells | Partial | Boxes grouped into rows by y; no real cell model |
+| Multiple artwork regions | Partial | Single mask / single heuristic region |
+| Handwriting | Partial | Caught by low-confidence flag; no special recognizer |
+| Callout arrows crossing into artwork | Handled | Any box whose center is in \( R \) is dropped; lines themselves are not redrawn |
+| Learned artwork detector | Not done | Heuristic or user mask only |
+| Full vision-language path | Not done | Stub only |
+| Embedding RAG | Not done | Simple in-memory overlap only |
 
-Flagged items are returned in the result dict so a person can review them.
+Flagged items are returned so a person can check them.  
+Nothing whose center lies in \( R \) is ever modified.
 
-## What is only partially done
+## Metrics
 
-- Table structure (rows are grouped by y-coordinate; no full cell model yet)
-- Vision-language path (interface exists, no live Qwen-VL call)
-- Learned detector for the artwork region
-- Proper embedding RAG (simple in-memory overlap for now)
-- Inpainting (OpenCV Telea is available as an option)
+- PSNR inside \( R \) (target: infinite)
+- Number of flagged items
+- Consistency of repeated terms
 
-These live in `advanced.py` and can be turned on with flags, but the default path does not depend on them.
-
-## Metrics that matter
-
-- PSNR / exact pixel match inside the artwork region (must be perfect)
-- Whether domain terms stay consistent
-- How many items get flagged for a human
-
-chrF or COMET can be added later on a held-out set of sentences; they are not in the current code.
+Proper chrF / COMET would need a labeled set; not present yet.

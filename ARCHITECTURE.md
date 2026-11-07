@@ -1,23 +1,15 @@
 # Structure
 
-```
-original image ─────────────────────────────────────┐
-                                            │
-working copy                                │
-  ├─ optional deskew / upscale              │
-  ├─ detect artwork region                  │
-  ├─ OCR                                    │
-  ├─ filter boxes                           │
-  ├─ translate                              │
-  └─ draw Chinese                           │
-                                            │
-                    paste original artwork pixels
-                                            │
-                    output image ◄───────────┘
-```
+Original image \( I \) is kept.  
+A working copy is used for OCR and drawing.  
 
-The paste is the last step. It uses a copy of the original that received the same geometric transforms (if any), so the coordinates match.
+At the end the pixels of the artwork region \( R \) are copied from the (possibly transformed) original back into the output, enforcing
 
-Optional pieces (inpainting, table row grouping, super-resolution, PSNR) sit beside the main path and can be enabled independently.
+\[
+I'(x,y) = I(x,y) \quad \forall (x,y) \in R
+\]
 
-See `ALGORITHM.md` for the filtering rules and special cases.
+Optional steps (deskew, upscale, inpainting, contrast) only touch the working copy.  
+The same geometric transform is applied to the original so the paste stays aligned.
+
+See `ALGORITHM.md` for the formal constraint, filtering rules, and which special cases are handled.
