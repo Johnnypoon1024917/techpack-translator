@@ -1,26 +1,15 @@
-# Qwen Backend (Recommended for Chinese)
+# Qwen
 
-Qwen (通义千问) is excellent for garment-industry Chinese translation.
+Uses DashScope (`qwen-plus`).
 
-### Setup
 ```bash
-pip install dashscope
-export DASHSCOPE_API_KEY=your_key_here
+export DASHSCOPE_API_KEY=sk-...
 ```
 
-### Usage
 ```python
 from app.core import Translator, process_techpack
-
-translator = Translator(backend="qwen")
-result = process_techpack("input.jpg", "output.jpg", translator=translator)
+t = Translator(backend="qwen")
+process_techpack("in.jpg", "out.jpg", translator=t)
 ```
 
-Or via API:
-```bash
-curl -X POST http://localhost:8000/translate \
-  -F "file=@sample.jpg" \
-  -F "backend=qwen"
-```
-
-The system prompt is tuned for apparel terminology (明线, 版型, YKK, etc.).
+Falls back to the glossary if the key is missing or the call fails.
