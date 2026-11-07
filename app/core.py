@@ -1,22 +1,28 @@
 """
-Production-oriented Tech Pack Translator
+Production-oriented Tech Pack Translator with special-case handling.
 Designed for Crystal Group–style global apparel operations.
 
-Translation backends:
-- glossary (offline)
-- qwen     (Alibaba Qwen via DashScope – recommended for Chinese)
-- deepl / openai (placeholders)
+Special cases handled:
+- Design pack overlap → exclude intersecting boxes
+- Low confidence / handwriting → flag, do not auto-translate
+- Already Chinese → skip
+- Very small text → skip or flag
+- Watermarks / stamps → size + position filter
+- Long text overflow → adaptive font size
+- Qwen API failure → automatic glossary fallback
+- Colored / low-contrast text → optional contrast boost
 """
 
 import os
+import re
 import logging
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, List
 from pathlib import Path
 
 import cv2
 import numpy as np
 import pytesseract
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageEnhance
 from difflib import SequenceMatcher
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -42,16 +48,19 @@ GLOSSARY = {
     "Design pack image": "设计包装图",
 }
 
-class Translator:
-    """Pluggable translation backend. Qwen is recommended for Chinese quality."""
+CHINESE_RE = re.compile(r"[\u4e00-\u9fff]")
 
+def contains_chinese(text: str) -> bool:
+    return bool(CHINESE_RE.search(text))
+
+class Translator:
     def __init__(self, backend: str = "glossary", api_key: Optional[str] = None):
         self.backend = backend.lower()
         self.api_key = api_key or os.getenv("DASHSCOPE_API_KEY") or os.getenv("TRANSLATION_API_KEY")
 
     def translate(self, text: str) -> Optional[str]:
         text = text.strip()
-        if not text:
+        if not text or contains_chinese(text):
             return None
         if self.backend == "qwen":
             return self._qwen(text)
@@ -69,19 +78,18 @@ class Translator:
 
     def _qwen(self, text: str) -> Optional[str]:
         if not self.api_key:
-            logger.warning("No DASHSCOPE_API_KEY, falling back to glossary")
             return self._glossary(text)
         try:
             import dashscope
             from dashscope import Generation
             dashscope.api_key = self.api_key
             system_prompt = (
-                "You are a professional translator for the garment / apparel industry. "
-                "Translate the following English tech-pack text into accurate, concise Simplified Chinese. "
-                "Keep technical terms consistent (e.g. topstitch = 明线, fit block = 版型, YKK remains YKK). "
-                "Output ONLY the Chinese translation, nothing else."
+                "You are a professional apparel technical translator. "
+                "Translate the English tech-pack phrase into concise Simplified Chinese. "
+                "Keep terms consistent (topstitch=明线, fit block=版型, YKK unchanged). "
+                "Output ONLY the Chinese translation."
             )
-            response = Generation.call(
+            resp = Generation.call(
                 model="qwen-plus",
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -89,12 +97,11 @@ class Translator:
                 ],
                 result_format="message",
             )
-            if response.status_code == 200:
-                return response.output.choices[0].message.content.strip()
-            return self._glossary(text)
+            if resp.status_code == 200:
+                return resp.output.choices[0].message.content.strip()
         except Exception as e:
-            logger.error(f"Qwen failed: {e}")
-            return self._glossary(text)
+            logger.error(f"Qwen failed ({e}) → glossary fallback")
+        return self._glossary(text)
 
 def detect_design_pack_region(img, mask_path=None, auto_right_ratio=0.62):
     h, w = img.shape[:2]
@@ -124,47 +131,118 @@ def get_chinese_font(size=16):
                 continue
     return ImageFont.load_default()
 
-def process_techpack(input_path, output_path, mask_path=None, translator=None, conf_threshold=40.0, show_protected=True):
+def adaptive_font_size(draw, text, max_width, max_height, base_size=16):
+    low, high = 8, base_size
+    best = 8
+    while low <= high:
+        mid = (low + high) // 2
+        font = get_chinese_font(mid)
+        bbox = draw.textbbox((0, 0), text, font=font)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        if tw <= max_width and th <= max_height:
+            best = mid
+            low = mid + 1
+        else:
+            high = mid - 1
+    return get_chinese_font(best)
+
+def process_techpack(
+    input_path: str,
+    output_path: str,
+    mask_path: Optional[str] = None,
+    translator: Optional[Translator] = None,
+    conf_threshold: float = 45.0,
+    min_text_height: int = 8,
+    show_protected: bool = True,
+    enhance_contrast: bool = False,
+) -> Dict[str, Any]:
     if translator is None:
         translator = Translator(backend="glossary")
+
     pil_img = Image.open(input_path).convert("RGB")
+    if enhance_contrast:
+        pil_img = ImageEnhance.Contrast(pil_img).enhance(1.4)
+
     img_cv = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
     design_mask, design_bbox = detect_design_pack_region(img_cv, mask_path)
+    h, w = design_mask.shape
+
     data = pytesseract.image_to_data(pil_img, lang="eng", output_type=pytesseract.Output.DICT)
+
     boxes = []
+    flagged = []
+
     for i in range(len(data["text"])):
         try:
             conf = float(data["conf"][i])
         except (ValueError, TypeError):
             continue
         text = data["text"][i].strip()
-        if conf < conf_threshold or not text:
+        if not text:
             continue
-        x, y, w, h = data["left"][i], data["top"][i], data["width"][i], data["height"][i]
-        cx, cy = x + w // 2, y + h // 2
-        if 0 <= cy < design_mask.shape[0] and 0 <= cx < design_mask.shape[1] and design_mask[cy, cx] == 0:
-            boxes.append({"text": text, "x": x, "y": y, "w": w, "h": h, "conf": conf})
+
+        x, y, bw, bh = data["left"][i], data["top"][i], data["width"][i], data["height"][i]
+        cx, cy = x + bw // 2, y + bh // 2
+
+        if not (0 <= cy < h and 0 <= cx < w):
+            continue
+        if design_mask[cy, cx] > 0:
+            continue
+        if bh < min_text_height:
+            flagged.append({"text": text, "reason": "too_small", "conf": conf})
+            continue
+        if conf < conf_threshold:
+            flagged.append({"text": text, "reason": "low_confidence", "conf": conf})
+            continue
+        if bw > w * 0.6 or text.lower() in {"page", "page 1", "confidential"}:
+            flagged.append({"text": text, "reason": "watermark_like", "conf": conf})
+            continue
+        if contains_chinese(text):
+            continue
+
+        boxes.append({"text": text, "x": x, "y": y, "w": bw, "h": bh, "conf": conf})
+
     out = pil_img.copy()
     draw = ImageDraw.Draw(out)
-    font = get_chinese_font(15)
+
     translated_count = 0
     translations = []
     for b in boxes:
         trans = translator.translate(b["text"])
-        if trans:
-            draw.rectangle([b["x"]-1, b["y"]-1, b["x"]+b["w"]+2, b["y"]+b["h"]+2], fill="white")
-            draw.text((b["x"], b["y"]), trans, fill="black", font=font)
-            translated_count += 1
-            translations.append({"original": b["text"], "translated": trans})
-    if show_protected and design_bbox[2] > design_bbox[0]:
-        draw.rectangle(design_bbox, outline="red", width=3)
-        draw.text((design_bbox[0]+10, design_bbox[1]+10), "PROTECTED DESIGN PACK", fill="red", font=font)
+        if not trans:
+            flagged.append({"text": b["text"], "reason": "no_translation", "conf": b["conf"]})
+            continue
+
+        font = adaptive_font_size(draw, trans, b["w"] + 4, b["h"] + 2, base_size=16)
+        draw.rectangle(
+            [b["x"] - 1, b["y"] - 1, b["x"] + b["w"] + 2, b["y"] + b["h"] + 2],
+            fill="white",
+        )
+        draw.text((b["x"], b["y"]), trans, fill="black", font=font)
+        translated_count += 1
+        translations.append({"original": b["text"], "translated": trans})
+
+    # Hard pixel-perfect copy of protected region (safety net)
+    if design_bbox[2] > design_bbox[0]:
+        x1, y1, x2, y2 = design_bbox
+        region = pil_img.crop((x1, y1, x2, y2))
+        out.paste(region, (x1, y1))
+        if show_protected:
+            draw = ImageDraw.Draw(out)
+            draw.rectangle(design_bbox, outline="red", width=3)
+            font_small = get_chinese_font(12)
+            draw.text((x1 + 8, y1 + 8), "PROTECTED", fill="red", font=font_small)
+
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     out.save(output_path, quality=95)
-    return {
+
+    result = {
         "backend": translator.backend,
-        "boxes_detected": len(boxes),
+        "boxes_considered": len(boxes) + len(flagged),
         "translated": translated_count,
+        "flagged": flagged,
         "protected_bbox": design_bbox,
         "translations": translations,
     }
+    logger.info(f"Done: translated={translated_count}, flagged={len(flagged)}")
+    return result
