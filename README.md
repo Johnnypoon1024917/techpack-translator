@@ -152,6 +152,16 @@ python tests/test_pipeline.py      # automated checks
 - `detect_artwork_by_density` in `advanced.py` (text density + variance, less position-dependent)  
 - Learned detector remains open; IoU helper is provided for future measurement.
 
+## Discussion questions
+
+These are the industrial questions the current design leaves open:
+
+1. With fewer than 50 labeled packs and no guarantee that future layouts stay within the current support, would you deploy a detector for \( R \) at all, or keep the user mask and spend the modeling budget on something else? What evidence would reverse that decision?
+
+2. Suppose a false negative on \( R \) (artwork altered) triggers a full reprint, while a false positive only delays translation by one human review. Derive the decision threshold on detector confidence that minimizes expected cost, and state the single parameter you would need from the factory to set it.
+
+3. The pixel constraint is already satisfied by the final copy. Under what measured condition on terminology consistency, review load, and reprint rate would you accept the risk of an end-to-end vision-language model that can no longer give a hard guarantee inside \( R \)?
+
 ## Notes
 
 - Design pack image: user mask or right-side heuristic. Final step copies original pixels. Position variation is handled by the mask.  
