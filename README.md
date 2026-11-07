@@ -1,85 +1,48 @@
-# Tech Pack Image Translator
+# Tech Pack Translator
 
-**Production-ready interview solution for Crystal Group Hong Kong**
+Translate text in garment tech pack images to Chinese.  
+The design artwork (the part that gets printed on the garment) is left completely untouched.
 
-Translate garment tech pack images to Chinese while keeping the **Design Pack Image** 100% pixel-identical (it will be printed on the garment).
+## Why this exists
 
-Factories are global; clients and colleagues are international. This system solves the daily communication problem.
+Tech packs go between the Hong Kong design office and factories in different countries.  
+A lot of the notes are in English. Factories need Chinese.  
+The design image itself cannot be changed.
 
----
+## What it does
 
-## Challenges (面试要点)
+- Finds text outside the design artwork
+- Translates it (glossary or Qwen)
+- Puts the Chinese back in roughly the same place
+- Copies the original design artwork pixels back at the end so nothing is modified there
 
-| Challenge | Impact | Solution in this project |
-|-----------|--------|--------------------------|
-| Design Pack Image must stay unchanged | Printed on garment | User mask or auto heuristic + pixel copy |
-| Position of design image varies | Different tech packs | Configurable mask or right-side heuristic |
-| Mixed content (tables + drawings + callouts) | One model is not enough | OCR with bounding boxes + selective overlay |
-| Text length changes (EN→ZH) | Layout breaks | Overlay inside original boxes |
-| Domain terminology | Generic MT is poor | Fashion glossary + pluggable DeepL/LLM |
-| Scan quality / watermarks | OCR errors | Confidence filter + preprocessing ready |
+## Run it
 
-## Algorithm
-
-1. Load image  
-2. Detect / apply Design Pack mask (user mask preferred)  
-3. OCR non-masked regions with bounding boxes  
-4. Translate (glossary / DeepL / OpenAI)  
-5. White-out original text → draw Chinese  
-6. Optionally outline protected region for review  
-7. Output final image  
-
-See `ARCHITECTURE.md` for full design.
-
-## Quick Start
-
-### Web Demo (best for interview)
 ```bash
 pip install -r requirements.txt
-python -m app.web_demo
-# http://localhost:7860
+python -m app.web_demo          # browser UI
+# or
+python -c "from app.core import process_techpack; process_techpack('samples/sample.jpg', 'out.jpg')"
 ```
 
-### API
+Docker:
 ```bash
-uvicorn app.api:app --reload
-# POST /translate  (returns image)
-# POST /translate/json  (returns metadata)
+docker compose up web
 ```
 
-### Docker
-```bash
-docker compose up web     # Gradio on :7860
-docker compose up api     # FastAPI on :8000
-```
+## Layout
 
-## Project Structure
-```
-app/
-  core.py          # Pipeline + Translator + mask logic
-  api.py           # FastAPI production endpoint
-  web_demo.py      # Gradio UI
-Dockerfile
-docker-compose.yml
-requirements.txt
-ARCHITECTURE.md
-```
+- `app/core.py` – main pipeline
+- `app/advanced.py` – deskew, inpainting, metrics, etc.
+- `app/api.py` – FastAPI
+- `app/web_demo.py` – Gradio
+- `ALGORITHM.md` – longer write-up of the approach
 
-## Production Features
+## Notes
 
-- **User-supplied mask** for exact Design Pack protection  
-- **Pluggable translation** (`glossary` / `deepl` / `openai`)  
-- **FastAPI** + **Gradio**  
-- **Docker Compose**  
-- Structured logging & JSON results  
-- Easy to swap Tesseract → PaddleOCR  
+The design artwork region is detected with a simple right-side heuristic or a user mask.  
+User mask is more reliable.
 
-## For Crystal Group Interview
+Qwen needs `DASHSCOPE_API_KEY`. Without it the code falls back to the glossary.
 
-This demonstrates:
-- Understanding of global apparel manufacturing pain points  
-- Careful handling of print-critical graphics  
-- Clean, extensible architecture  
-- Ready-to-demo web UI and API  
-
-Add your real DeepL / Azure / OpenAI key and the system becomes fully production-ready.
+Protected region PSNR is infinite when the paste is done correctly (tested).
