@@ -1,9 +1,23 @@
 # Structure
 
-Working image goes through OCR and translation.  
-Original design artwork pixels are pasted back at the end.
+```
+original image ─────────────────────────────────────┐
+                                            │
+working copy                                │
+  ├─ optional deskew / upscale              │
+  ├─ detect artwork region                  │
+  ├─ OCR                                    │
+  ├─ filter boxes                           │
+  ├─ translate                              │
+  └─ draw Chinese                           │
+                                            │
+                    paste original artwork pixels
+                                            │
+                    output image ◄───────────┘
+```
 
-Optional steps (deskew, upscale, inpainting) only affect the working copy.  
-The paste uses a copy that received the same geometric transforms so coordinates still match.
+The paste is the last step. It uses a copy of the original that received the same geometric transforms (if any), so the coordinates match.
 
-See `ALGORITHM.md` for the step-by-step.
+Optional pieces (inpainting, table row grouping, super-resolution, PSNR) sit beside the main path and can be enabled independently.
+
+See `ALGORITHM.md` for the filtering rules and special cases.
