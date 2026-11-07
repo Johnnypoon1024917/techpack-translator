@@ -1,53 +1,54 @@
 # Tech Pack Translator
 
-Answers to the interview task: translate necessary text in a garment tech pack image to Chinese, while leaving the design pack image unchanged.
+A system that translates necessary text in a garment tech pack image to Chinese, while leaving the design pack image pixel-identical.
+
+This repository answers the interview task: identify the challenges, design an algorithm, and provide runnable code.
 
 ## 1. Challenges
 
 | Challenge | Why it is difficult | How it is handled on this sample |
 |-----------|---------------------|----------------------------------|
-| Design pack image must stay pixel-identical | Printed on the garment. Position varies. | Final pixel copy from preserved original. PSNR on the region is infinite. |
-| Artwork-internal text vs annotations | Top-right graphic contains “RAMESES II”, “Kings of Egypt II”, “VIEW OF HEAD”. These must not be translated. Bottom pants sketch has “Design pack image” labels that are placeholders. | Region mask excludes the artwork before OCR filtering. Labels outside the mask can be translated. |
-| Non-translatable table content | YKK codes, measurements (5.5 oz, 60", 1/8"), quantities, “N/A”, colour names used as proper nouns. | Preserve pattern skips codes and measurements. Glossary controls colour-name handling. |
-| Empty header fields | Style Name, Brand, Designer are blank. | Only labels are translated; empty values are left empty. |
-| Mixed content | Tables, call-outs, drawings. | OCR + box filter; drawings outside the mask are untouched. |
-| Text length change | Chinese shorter or longer. | Adaptive font size inside the original box. |
-| Domain terms | Fit block, topstitch, piping, etc. | Apparel glossary + optional Qwen. |
-| Scan quality | Skew, watermarks, low contrast. | Deskew (shared transform), watermark filter, confidence gate. |
+| Design pack image must stay pixel-identical | It is printed on the garment. Its position can vary. | The original pixels are copied back at the end. PSNR on the region is infinite. |
+| Artwork text vs annotation text | The top-right graphic contains “RAMESES II”, “Kings of Egypt II”, and “VIEW OF HEAD”. These must not be translated. Labels on the pants sketch are placeholders. | The artwork region is masked before translation. Text outside the mask can be translated. |
+| Codes and measurements | YKK codes, sizes (5.5 oz, 60", 1/8"), quantities, and “N/A” must stay unchanged. | A preserve pattern skips them. |
+| Empty header fields | Style Name, Brand, and Designer are blank. | Only the labels are translated. Empty values are left empty. |
+| Mixed content | Tables, call-outs, and drawings appear together. | OCR is filtered by region, confidence, size, and content type. |
+| Text length changes | Chinese is often shorter or longer than English. | Font size is adjusted to fit the original box. |
+| Domain terms | Fit block, topstitch, piping, etc. | An apparel glossary is used, with an optional Qwen fallback. |
+| Scan quality | Skew, watermarks, and low contrast are common. | Deskew (with shared transform), watermark filter, and confidence gate. |
 
 Full policy: [docs/POLICY.md](docs/POLICY.md).
 
 ## 2. Algorithm
 
-Two images:
+Two images are kept:
 
-- \( I_0 \): preserved original
-- \( I_w \): working copy
+- \( I_0 \): the preserved original
+- \( I_w \): the working copy
 
-After rendering:
+After rendering, the design pack region is restored by copying:
 
 \[
 I'|_{\hat{R}} = (T(I_0))|_{\hat{R}}
 \]
 
-\( \hat{R} \) = design pack region (user mask preferred; right-side heuristic fallback).  
-\( T \) = optional shared geometric transform.
+where \(\hat{R}\) is the design pack region and \(T\) is any shared geometric transform (for example, deskew).
 
 ```mermaid
 flowchart TB
-    subgraph Original["I_0 Preserved Original"]
-        A1[Input] --> A2[Shared transform T]
+    subgraph Original["Preserved Original"]
+        A1[Input] --> A2[Shared transform]
         A2 --> A3[Kept for final copy]
     end
-    subgraph Working["I_w Working Copy"]
+    subgraph Working["Working Copy"]
         B1[Input] --> B2[Optional deskew / upscale]
         B2 --> B3[Detect design pack region]
         B3 --> B4[OCR]
-        B4 --> B5[Filter: outside region, confidence, size, not CJK, not code/measurement, not watermark]
-        B5 --> B6[Translate lexicon / Qwen]
-        B6 --> B7[Render Chinese adaptive size]
+        B4 --> B5[Filter: outside region, confidence, size, not CJK, not code/measurement]
+        B5 --> B6[Translate (glossary / Qwen)]
+        B6 --> B7[Render Chinese]
     end
-    A3 --> C[Pixel copy of design pack region]
+    A3 --> C[Copy design pack pixels]
     B7 --> C
     C --> D[Output + PSNR]
 ```
@@ -56,15 +57,15 @@ flowchart TB
 
 ![Pipeline](docs/pipeline.svg)
 
-Detail: [ALGORITHM.md](ALGORITHM.md), [docs/pipeline.md](docs/pipeline.md).
+More detail: [ALGORITHM.md](ALGORITHM.md), [docs/pipeline.md](docs/pipeline.md).
 
 ### Special cases
 
-Handled: overlap with artwork, already-Chinese, low confidence, small text, watermarks, overflow, API failure, deskew alignment, codes/measurements preserved.  
-Partial: per-box rotation, full table model, multi-region (union supported), learned detector, VLM path, embedding RAG.  
-None write inside the artwork region after the final copy.
+Handled: overlap with artwork, already-Chinese text, low confidence, small text, watermarks, overflow, API failure, deskew alignment, and preservation of codes/measurements.  
+Partial: per-box rotation, full table structure, multiple artwork regions (union is supported), learned detector, end-to-end VLM, and embedding-based retrieval.  
+None of these paths write inside the artwork region after the final copy.
 
-## 3. Runnable project
+## 3. How to run
 
 ```bash
 git clone https://github.com/Johnnypoon1024917/techpack-translator.git
@@ -76,35 +77,36 @@ python -m app.web_demo
 Docker:
 
 ```bash
-docker compose up web     # :7860
-docker compose up api     # :8000
+docker compose up web     # Gradio on :7860
+docker compose up api     # FastAPI on :8000
 ```
 
-Check on the sample:
+Check the sample:
 
 ```bash
 python -m app.eval_sample
+python tests/test_pipeline.py
 ```
 
-## 4. Result on the provided sample
+## 4. Result on the sample
 
 - Translated boxes: 61  
-- Flagged: 183  
-- Protected-region PSNR: **infinite**  
-- Protected bbox: (930, 5, 1490, 469)  
-- Output: `docs/sample_output.jpg`
+- Flagged boxes: 183  
+- Protected-region PSNR: infinite  
+- Protected region: (930, 5, 1490, 469)  
+- Output image: `docs/sample_output.jpg`
 
-### Flag breakdown (183 total)
+### Why 183 boxes were flagged
 
 | Reason | Count | Meaning |
 |--------|-------|---------|
-| no_translation | 136 | Codes, measurements, numbers, or strings outside glossary (correctly left unchanged) |
-| low_confidence | 36 | OCR confidence below threshold; flagged for review |
+| no_translation | 136 | Codes, measurements, numbers, or strings outside the glossary (left unchanged) |
+| low_confidence | 36 | OCR confidence below threshold |
 | likely_vertical | 9 | Aspect ratio suggests vertical text |
-| too_small | 2 | Height < 8 px |
-| **Total flagged** | **183** | |
+| too_small | 2 | Height under 8 px |
+| **Total** | **183** | |
 
-The 136 “no_translation” items are mostly YKK codes, oz/inch measurements, pure numbers, and short tokens that the preserve filter or glossary correctly rejected. They are not missed table cells.
+Most of the 136 “no_translation” items are YKK codes, ounce/inch measurements, and pure numbers. They were correctly left alone.
 
 ### Example translations
 
@@ -119,82 +121,80 @@ The 136 “no_translation” items are mostly YKK codes, oz/inch measurements, p
 | Blue Light | 浅蓝 |
 | As Per Requirement | 按要求 |
 
-Full BOM-style fragments that appear in the sample (after OCR) are handled by the same glossary + preserve rules. Codes such as “YKK: 316” and measurements such as “5.5 oz” or “60"” are left unchanged.
+Codes such as “YKK: 316” and measurements such as “5.5 oz” or “60"” are left unchanged.
 
-### Visual
+### Visual check
 
-Before (original sample) and after (translated, protected region outlined in red) are generated by:
+Run `python -m app.eval_sample` to regenerate `docs/sample_output.jpg`.  
+The top-right artwork region is outlined in red and remains pixel-identical to the original.
 
-```bash
-python -m app.eval_sample
-```
-
-The output image is written to `docs/sample_output.jpg`. The top-right artwork region remains pixel-identical (PSNR infinite).
-
-## 5. Evaluation and tests
+## 5. Tests and evaluation
 
 ```bash
-python -m app.eval_sample          # metrics + flag breakdown
+python -m app.eval_sample          # metrics and flag breakdown
 python tests/test_pipeline.py      # automated checks
 ```
 
-**Test coverage** (`tests/test_pipeline.py`):
-- Protected-region PSNR is infinite  
+The tests check that:
+
+- PSNR on the artwork region is infinite  
 - Known codes are not translated  
-- Artwork strings (RAMESES, Kings of Egypt, VIEW OF HEAD) do not appear in translations  
-- Output file is written  
+- Artwork strings (RAMESES, Kings of Egypt, VIEW OF HEAD) do not appear in the translations  
+- The output file is written  
 
-**Failure cases**: see [docs/FAILURES.md](docs/FAILURES.md).
+Known failure modes are listed in [docs/FAILURES.md](docs/FAILURES.md).
 
-**Region detection**  
-- User mask (preferred)  
-- Right-side heuristic (default)  
-- `detect_artwork_by_density` in `advanced.py` (text density + variance, less position-dependent)  
-- Learned detector remains open; IoU helper is provided for future measurement.
+Region detection currently uses:
+
+- A user-supplied mask (preferred)  
+- A right-side heuristic (default)  
+- A density-based fallback in `advanced.py`  
+
+A learned detector is still open. An IoU helper is included for future measurement.
 
 ## Discussion questions
 
-These are the formal questions the current design leaves open. A qualified response should derive the bound, the threshold, or the identification condition.
+These questions are left open by the current design. A precise answer should derive the bound, the threshold, or the identification condition.
 
 **1. Finite-sample generalization**
 
-Let \(\mathcal{H}\) be a detector class with VC dimension \(d = \mathrm{VC}(\mathcal{H})\). Let \(S\) be \(n\) labeled packs drawn i.i.d. from \(D\). Let \(\mathrm{err}_D(h)\) be true error on a new factory and \(\mathrm{err}_S(h)\) be empirical error.
+Let \(\mathcal{H}\) be a detector class with VC dimension \(d\). Let \(S\) be \(n\) labeled packs drawn i.i.d. from \(D\). Let \(\mathrm{err}_D(h)\) be the true error on a new factory and \(\mathrm{err}_S(h)\) the empirical error.
 
-State the PAC bound you are using. For \(n < 50\), what is the numerical value of the bound, and is it vacuous? What \(n\) would you need to guarantee \(\mathrm{err}_D(h) \le \mathrm{err}_S(h) + 0.01\) with probability \(0.95\)?
+State the PAC bound you are using. For \(n < 50\), is the bound vacuous? What \(n\) would you need to guarantee \(\mathrm{err}_D(h) \le \mathrm{err}_S(h) + 0.01\) with probability 0.95?
 
 **2. Bayes-optimal decision and calibration**
 
-Let \(Y = 1\) if a region is artwork \(R\), \(Y = 0\) otherwise. Let \(L(0,1) = C_{FN}\) be the cost of a false negative (reprint) and \(L(1,0) = C_{FP}\) be the cost of a false positive (one human review).
+Let \(Y = 1\) if a region is artwork and \(Y = 0\) otherwise. Let \(C_{FN}\) be the cost of a false negative (reprint) and \(C_{FP}\) the cost of a false positive (one human review).
 
-Derive the Bayes-optimal classifier. Then prove that thresholding an uncalibrated score \(f(x)\) at that threshold does not in general minimize expected risk. What distribution-free procedure gives a finite-sample guarantee on \(P(\text{artwork overwritten})\) without assuming calibration?
+Derive the Bayes-optimal classifier. Show that thresholding an uncalibrated score at that threshold does not in general minimize expected risk. What distribution-free procedure gives a finite-sample guarantee on the probability of artwork being overwritten, without assuming calibration?
 
-**3. Causal attribution in the pipeline**
+**3. Causal attribution**
 
-Model the pipeline as a structural causal model \(X \to O \to T \to R \to Y\), where \(O\) is OCR output, \(T\) is translation, \(R\) is rendering, and \(Y\) is final quality. Let \(U_O, U_T, U_R\) be exogenous noise.
+Model the pipeline as \(X \to O \to T \to R \to Y\), where \(O\) is OCR, \(T\) is translation, \(R\) is rendering, and \(Y\) is final quality.
 
-If end-to-end quality \(Y\) improves after you change \(T\), how do you identify the causal effect of \(T\) on \(Y\), holding \(O\) fixed? Show why the observational contrast \(\mathbb{E}[Y \mid T = 1] - \mathbb{E}[Y \mid T = 0]\) does not identify it, and state the \(do\)-intervention you need.
+If end-to-end quality improves after you change the translation module, how do you identify the causal effect of translation while holding OCR fixed? Why does the observational contrast not identify it, and what intervention do you need?
 
 ## Notes
 
-- Design pack image: user mask or right-side heuristic. Final step copies original pixels. Position variation is handled by the mask.  
-- Translation: glossary (offline) or Qwen (`DASHSCOPE_API_KEY`).  
-- Empty headers: labels translated, values left blank.  
-- Artwork text (RAMESES II etc.): inside protected region, never modified.
+- Design pack image: user mask or right-side heuristic. Final step copies original pixels.  
+- Translation: offline glossary, or Qwen if `DASHSCOPE_API_KEY` is set.  
+- Empty headers: labels are translated, values are left blank.  
+- Artwork text (RAMESES II and similar): inside the protected region, never modified.
 
 ## Last remark
 
-The interview question itself leaves four formal gaps.
+The interview question itself leaves four gaps.
 
-1. **Objective underspecified.**  
-   The constraint \(I'|_R = I|_R\) is stated, but no target translation map \(f^*\) or loss \(\ell(f(s), f^*(s))\) is given. Any map that is the identity on strings intersecting \(R\) satisfies the written requirement.
+1. **The objective is underspecified.**  
+   The pixel constraint is stated, but no target translation map or loss is given. Any map that leaves strings inside the artwork region untouched satisfies the written requirement.
 
-2. **Generalization unmeasurable.**  
-   One sample is supplied. With \(n = 1\), every PAC bound on \(\mathrm{err}_D(\hat{R})\) is vacuous. Variation in the location of \(R\) is noted but not instantiated.
+2. **Generalization cannot be measured.**  
+   Only one sample is supplied. With a single example, every uniform convergence bound is vacuous. Variation in artwork position is mentioned but not shown.
 
-3. **No decision criterion.**  
-   The ratio \(r = C_{FN}/C_{FP}\) is never given. The Bayes threshold \(1/(1+r)\) cannot be evaluated. Every operating point is admissible.
+3. **No decision criterion is given.**  
+   The relative cost of a reprint versus a human review is never stated. Without that ratio, every operating point is admissible.
 
-4. **Effect unidentified.**  
-   An end-to-end improvement does not identify whether the gain came from OCR, translation, or rendering. No \(do\)-intervention on a single module is requested.
+4. **The source of improvement is not identified.**  
+   An end-to-end gain does not show whether it came from OCR, translation, or rendering. No intervention that isolates one module is requested.
 
 A solution can meet every stated requirement while remaining silent on all four points. That is a property of the question.
