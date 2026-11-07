@@ -1,69 +1,99 @@
-# Approach
+# Algorithmic Formulation and Design
+## Constrained Document Image Translation for Garment Tech Packs
 
-## Problem
+### 1. Problem Definition
 
-Let \( I \) be the input image.  
-Let \( R \) be the set of pixels that belong to the design artwork (the part printed on the garment).
+Let \( I \in \mathbb{R}^{H \times W \times 3} \) denote the input tech-pack image.  
+Let \( R \subset \{1,\dots,H\} \times \{1,\dots,W\} \) be the (latent) pixel set corresponding to the design artwork that will be physically realized on the garment.
 
-We want an output image \( I' \) such that:
+The objective is to produce \( I' \) satisfying the hard constraint
 
 \[
-I'(x,y) = I(x,y) \quad \forall (x,y) \in R
+I'(x,y) = I(x,y) \qquad \forall (x,y) \in R
 \]
 
-and all relevant text outside \( R \) is replaced by its Chinese translation.
+while replacing textual content in \( \Omega = \{1,\dots,H\} \times \{1,\dots,W\} \setminus R \) by its Simplified-Chinese translation.  
+Secondary objectives are preservation of geometric structure (table rulings, call-out leaders) and terminological consistency with respect to a domain lexicon \( \mathcal{L} \).
 
-The equality is enforced by copying those pixels from the original at the end of the pipeline.  
-When the copy is correct, PSNR inside \( R \) is infinite.
+This is an instance of constrained multi-modal generation under an equality constraint on a subset of the output support.
 
-## Pipeline
+### 2. Overall Procedure
 
-1. Keep an untouched copy of \( I \).
-2. Optional geometric transforms (deskew, upscale) are applied to a working copy.  
-   The same transform is applied to the untouched copy so the coordinates of \( R \) still match.
-3. Obtain \( R \) (user mask or right-side heuristic).
-4. OCR → set of boxes \( \{(b_i, s_i, c_i)\} \).
-5. Discard any box where the center lies in \( R \), or \( c_i \) is low, or the box is too small, or \( s_i \) already contains Chinese, or it looks like a watermark.
-6. Translate the rest.
-7. Draw Chinese text.
-8. Copy original pixels of \( R \) back into the output.
-9. (Optional) compute PSNR on \( R \) before any debug overlay is drawn.
+The implemented system follows a modular cascade.  
+Each stage is deliberately replaceable.
 
-## Translation
+1. **Geometric normalization** (optional).  
+   A working copy \( I_w \) is obtained by a similarity transform \( T \) (deskew and/or isotropic up-sampling).  
+   The identical transform is applied to a preserved copy \( I_0 \) so that coordinates remain commensurate.
 
-Glossary lookup (exact then fuzzy) followed by Qwen when a key is present.  
-On failure, glossary is used.  
-Repeated English strings reuse the same Chinese string.
+2. **Artwork region estimation**.  
+   \( \hat{R} \) is obtained either from a user-supplied binary mask or from a lightweight heuristic (high-variance, low text-density region, typically the right-hand portion of the page).  
+   A learned detector is a straightforward extension but is not required for the baseline.
 
-## Special cases
+3. **Text detection and recognition**.  
+   An off-the-shelf detector-recognizer yields a set of observations
+   \[
+   \mathcal{B} = \{(b_i, s_i, c_i)\}_{i=1}^N
+   \]
+   where \( b_i \) is a bounding box, \( s_i \) the recognized string and \( c_i \in [0,1] \) a confidence.
 
-| Case | Status | What happens |
-|------|--------|--------------|
-| Box center inside artwork | Handled | Box dropped |
-| Already Chinese | Handled | Skipped |
-| Very small text (< 8 px) | Handled | Flagged, not translated |
-| Low OCR confidence | Handled | Flagged, not translated |
-| Watermark / page number style | Handled | Skipped |
-| Translation overflows box | Handled | Font size reduced |
-| Qwen failure / no key | Handled | Glossary fallback |
-| Deskew | Handled | Identical rotation on both copies; PSNR stays infinite |
-| Colored text, low contrast | Partial | Optional contrast boost exists; not automatic |
-| Rotated or vertical text | Partial | Global deskew only; per-box rotation not implemented |
-| Merged table cells | Partial | Boxes grouped into rows by y; no real cell model |
-| Multiple artwork regions | Partial | Single mask / single heuristic region |
-| Handwriting | Partial | Caught by low-confidence flag; no special recognizer |
-| Callout arrows crossing into artwork | Handled | Any box whose center is in \( R \) is dropped; lines themselves are not redrawn |
-| Learned artwork detector | Not done | Heuristic or user mask only |
-| Full vision-language path | Not done | Stub only |
-| Embedding RAG | Not done | Simple in-memory overlap only |
+4. **Filtering**.  
+   A box is retained only if its center lies outside \( \hat{R} \), confidence exceeds a threshold, height is sufficient, the string contains no CJK characters, and it is not watermark-like.  
+   Rejected boxes are recorded for human review.
 
-Flagged items are returned so a person can check them.  
-Nothing whose center lies in \( R \) is ever modified.
+5. **Translation**.  
+   Cascade: lexicon (exact then fuzzy) → Qwen-Plus with apparel prompt → lexicon on failure.  
+   Identical source strings map to identical target strings.
 
-## Metrics
+6. **Rendering**.  
+   Chinese text is placed inside each retained box; font size is selected by binary search to respect box bounds.
 
-- PSNR inside \( R \) (target: infinite)
-- Number of flagged items
-- Consistency of repeated terms
+7. **Constraint enforcement**.  
+   Pixels of \( \hat{R} \) are copied from the transformed preserved original.  
+   This step is independent of earlier modules.
 
-Proper chrF / COMET would need a labeled set; not present yet.
+8. **Verification**.  
+   PSNR on \( \hat{R} \) is computed before any diagnostic overlay.  
+   Correct implementation yields \( +\infty \).
+
+### 3. Design Rationale
+
+The hard constraint is realized by an explicit copy rather than a soft penalty, guaranteeing the invariant even under upstream failure.  
+Modularity allows substitution of OCR, translator or inpainter without touching the constraint mechanism.  
+Rejected boxes are returned, giving a lightweight human-in-the-loop.
+
+### 4. Special Cases
+
+| Phenomenon | Treatment | Completeness |
+|------------|-----------|--------------|
+| Intersection with artwork | Discard if center inside | Complete (axis-aligned) |
+| Pre-existing CJK | Language filter | Complete |
+| Low confidence / handwriting | Threshold + flag | Partial |
+| Sub-resolution text | Height gate | Complete |
+| Watermarks | Size/lexical filter | Heuristic |
+| Overflow | Adaptive font size | Complete (single-line) |
+| API failure | Lexicon fallback | Complete |
+| Global skew | Shared transform | Complete |
+| Per-box rotation / vertical | — | Open |
+| Complex table structure | Row clustering only | Partial |
+| Multiple artwork regions | Single-region assumption | Open |
+| Low-contrast colour text | Optional stretch | Partial |
+| Learned region predictor | — | Open |
+| End-to-end VLM | Interface only | Open |
+| Embedding retrieval | In-memory overlap | Rudimentary |
+
+### 5. Evaluation
+
+Primary: PSNR on the artwork region (target \( +\infty \)).  
+Secondary (future): COMET/chrF on held-out sentences, lexicon exact-match rate, flag rate, geometric fidelity of rulings.  
+Recommended ablations: OCR vs VLM front-end, lexicon vs LLM vs retrieval, overlay vs inpainting, presence vs absence of the final pixel copy.
+
+### 6. Limitations and Extensions
+
+The baseline favours an auditable cascade.  
+Natural extensions (none of which relax the pixel constraint) include a learned segmenter for \( R \), a vision-language front-end still followed by the pixel copy, a vector store of approved translations, proper table-structure recognition, and uncertainty estimates to prioritize review.
+
+### 7. Implementation
+
+The cascade, shared-transform bookkeeping, filtering, adaptive rendering and PSNR check are implemented in `app/core.py` and `app/advanced.py`.  
+Items marked Open or Partial have only interfaces or simplified surrogates.

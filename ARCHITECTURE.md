@@ -1,15 +1,19 @@
-# Structure
+# Architecture
 
-Original image \( I \) is kept.  
-A working copy is used for OCR and drawing.  
+Two images are maintained:
 
-At the end the pixels of the artwork region \( R \) are copied from the (possibly transformed) original back into the output, enforcing
+- \( I_0 \): preserved original (receives only the same global geometric transform \( T \) as the working copy);
+- \( I_w \): working copy used for detection, recognition, translation and rendering.
+
+After rendering, the constraint
 
 \[
-I'(x,y) = I(x,y) \quad \forall (x,y) \in R
+I'|_{\hat{R}} = (T(I_0))|_{\hat{R}}
 \]
 
-Optional steps (deskew, upscale, inpainting, contrast) only touch the working copy.  
-The same geometric transform is applied to the original so the paste stays aligned.
+is realized by direct pixel copy.  
+Diagnostic overlays occur only after the copy and after PSNR measurement.
 
-See `ALGORITHM.md` for the formal constraint, filtering rules, and which special cases are handled.
+Optional modules never write inside \( \hat{R} \) once the copy has been performed.
+
+Full algorithmic detail, filtering predicates, special-case analysis and evaluation criteria are in `ALGORITHM.md`.
