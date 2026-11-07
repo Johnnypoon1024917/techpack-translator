@@ -4,29 +4,34 @@ Answers to the interview task: translate necessary text in a garment tech pack i
 
 ## 1. Challenges
 
-| Challenge | Why it is difficult |
-|-----------|---------------------|
-| Design pack image must stay pixel-identical | It is printed on the garment. Any change is a defect. Its position is not fixed across packs. |
-| Mixed content | Tables, free notes, call-outs and line drawings sit on the same page. A single OCR pass is not enough. |
-| Text length changes | Chinese is usually shorter; some phrases expand. Layout can break. |
-| Domain terms | Fit block, topstitch, YKK codes, fabric compositions. Generic translation is inconsistent. |
-| Scan quality | Watermarks, low resolution, skew, coloured or handwritten notes. |
-| Reconstruction | Replacing text must not damage table lines or technical drawings. |
+| Challenge | Why it is difficult | How it is handled on this sample |
+|-----------|---------------------|----------------------------------|
+| Design pack image must stay pixel-identical | Printed on the garment. Position varies. | Final pixel copy from preserved original. PSNR on the region is infinite. |
+| Artwork-internal text vs annotations | Top-right graphic contains “RAMESES II”, “Kings of Egypt II”, “VIEW OF HEAD”. These must not be translated. Bottom pants sketch has “Design pack image” labels that are placeholders. | Region mask excludes the artwork before OCR filtering. Labels outside the mask can be translated. |
+| Non-translatable table content | YKK codes, measurements (5.5 oz, 60", 1/8"), quantities, “N/A”, colour names used as proper nouns. | Preserve pattern skips codes and measurements. Glossary controls colour-name handling. |
+| Empty header fields | Style Name, Brand, Designer are blank. | Only labels are translated; empty values are left empty. |
+| Mixed content | Tables, call-outs, drawings. | OCR + box filter; drawings outside the mask are untouched. |
+| Text length change | Chinese shorter or longer. | Adaptive font size inside the original box. |
+| Domain terms | Fit block, topstitch, piping, etc. | Apparel glossary + optional Qwen. |
+| Scan quality | Skew, watermarks, low contrast. | Deskew (shared transform), watermark filter, confidence gate. |
 
-## 2. Algorithm (diagram)
+Full policy: [docs/POLICY.md](docs/POLICY.md).
 
-Two images are kept:
+## 2. Algorithm
+
+Two images:
 
 - \( I_0 \): preserved original
 - \( I_w \): working copy
 
-After translation and rendering we enforce
+After rendering:
 
 \[
 I'|_{\hat{R}} = (T(I_0))|_{\hat{R}}
 \]
 
-by copying the artwork pixels back. \( \hat{R} \) is the design pack region (user mask or right-side heuristic). \( T \) is an optional shared geometric transform (deskew / upscale).
+\( \hat{R} \) = design pack region (user mask preferred; right-side heuristic fallback).  
+\( T \) = optional shared geometric transform.
 
 ```mermaid
 flowchart TB
@@ -38,29 +43,26 @@ flowchart TB
         B1[Input] --> B2[Optional deskew / upscale]
         B2 --> B3[Detect design pack region]
         B3 --> B4[OCR]
-        B4 --> B5[Filter boxes]
+        B4 --> B5[Filter: outside region, confidence, size, not CJK, not code/measurement, not watermark]
         B5 --> B6[Translate lexicon / Qwen]
-        B6 --> B7[Render Chinese]
+        B6 --> B7[Render Chinese adaptive size]
     end
     A3 --> C[Pixel copy of design pack region]
     B7 --> C
-    C --> D[Output]
+    C --> D[Output + PSNR]
 ```
 
 ![Architecture](docs/architecture.svg)
 
-Full pipeline:
-
 ![Pipeline](docs/pipeline.svg)
 
-See also [ALGORITHM.md](ALGORITHM.md) and [docs/pipeline.md](docs/pipeline.md).
+Detail: [ALGORITHM.md](ALGORITHM.md), [docs/pipeline.md](docs/pipeline.md).
 
-### Special cases (short)
+### Special cases
 
-Handled in code: overlap with design pack, already-Chinese text, low confidence, very small text, watermarks, overflow (adaptive font), API failure (lexicon fallback), deskew alignment (PSNR stays infinite).
-
-Partial / open: per-box rotation, full table structure, multiple artwork regions (union of masks supported), learned detector, end-to-end VLM, embedding RAG.  
-None of these are allowed to write inside the design pack region after the final copy.
+Handled: overlap with artwork, already-Chinese, low confidence, small text, watermarks, overflow, API failure, deskew alignment, codes/measurements preserved.  
+Partial: per-box rotation, full table model, multi-region (union supported), learned detector, VLM path, embedding RAG.  
+None write inside the artwork region after the final copy.
 
 ## 3. Runnable project
 
@@ -68,42 +70,52 @@ None of these are allowed to write inside the design pack region after the final
 git clone https://github.com/Johnnypoon1024917/techpack-translator.git
 cd techpack-translator
 pip install -r requirements.txt
-python -m app.web_demo          # http://localhost:7860
+python -m app.web_demo
 ```
 
 Docker:
 
 ```bash
-docker compose up web           # Gradio on :7860
-docker compose up api           # FastAPI on :8000
+docker compose up web     # :7860
+docker compose up api     # :8000
 ```
 
-CLI:
-
-```python
-from app.core import process_techpack
-process_techpack("samples/sample_techpack.jpg", "out.jpg")
-```
-
-Qwen (optional):
+Check on the sample:
 
 ```bash
-export DASHSCOPE_API_KEY=sk-...
+python -m app.eval_sample
 ```
 
-Without the key the code uses the built-in glossary.
+## 4. Result on the provided sample
 
-## Notes on the design pack image
+- Translated boxes: 61  
+- Flagged (low confidence / small / watermark / vertical): 183  
+- Protected-region PSNR: **infinite**  
+- Output image: run `python -m app.eval_sample` to regenerate `docs/sample_output.jpg`
 
-- Detected by user mask (preferred) or a right-side heuristic. Position may vary; the mask removes that assumption.
-- Final step copies the original pixels of that region back. Measured PSNR on the region is infinite (tested with and without deskew).
-- Translation uses a small apparel glossary plus optional Qwen. Either satisfies the “API or own model” requirement.
+Example translations from the run:
 
-## Layout
+- Placement → 位置  
+- Quantity → 数量  
+- Main Fabric → 主面料  
+- Yards → 码  
+- USE HEAVY THREAD… → 所有明线使用重线  
+- Piping → 滚边绳  
 
-- `app/core.py` — pipeline, filtering, pixel copy
-- `app/advanced.py` — deskew, inpainting, metrics, multi-mask
-- `app/api.py` — FastAPI
-- `app/web_demo.py` — Gradio
-- `ALGORITHM.md` — formulation and special-case analysis
-- `docs/` — architecture and pipeline diagrams (Mermaid + SVG)
+Codes and measurements (YKK numbers, oz, inches) were left unchanged by the preserve filter.
+
+## 5. Evaluation
+
+```bash
+python -m app.eval_sample
+```
+
+Prints translated count, flag breakdown, protected bbox, PSNR, and sample translation pairs.  
+Primary metric is PSNR on \( \hat{R} \) (target ∞). Secondary metrics (chrF/COMET, cell IoU) need a labeled set and are not automated yet.
+
+## Notes
+
+- Design pack image: user mask or right-side heuristic. Final step copies original pixels. Position variation is handled by the mask.  
+- Translation: glossary (offline) or Qwen (`DASHSCOPE_API_KEY`).  
+- Empty headers: labels translated, values left blank.  
+- Artwork text (RAMESES II etc.): inside protected region, never modified.
