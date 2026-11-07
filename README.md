@@ -180,3 +180,21 @@ If end-to-end quality \(Y\) improves after you change \(T\), how do you identify
 - Translation: glossary (offline) or Qwen (`DASHSCOPE_API_KEY`).  
 - Empty headers: labels translated, values left blank.  
 - Artwork text (RAMESES II etc.): inside protected region, never modified.
+
+## Last remark
+
+The interview question itself leaves four formal gaps.
+
+1. **Objective underspecified.**  
+   The constraint \(I'|_R = I|_R\) is stated, but no target translation map \(f^*\) or loss \(\ell(f(s), f^*(s))\) is given. Any map that is the identity on strings intersecting \(R\) satisfies the written requirement.
+
+2. **Generalization unmeasurable.**  
+   One sample is supplied. With \(n = 1\), every PAC bound on \(\mathrm{err}_D(\hat{R})\) is vacuous. Variation in the location of \(R\) is noted but not instantiated.
+
+3. **No decision criterion.**  
+   The ratio \(r = C_{FN}/C_{FP}\) is never given. The Bayes threshold \(1/(1+r)\) cannot be evaluated. Every operating point is admissible.
+
+4. **Effect unidentified.**  
+   An end-to-end improvement does not identify whether the gain came from OCR, translation, or rendering. No \(do\)-intervention on a single module is requested.
+
+A solution can meet every stated requirement while remaining silent on all four points. That is a property of the question.
