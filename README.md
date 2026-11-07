@@ -1,71 +1,85 @@
 # Tech Pack Image Translator
 
-**Interview solution** — Translate garment tech pack images to Chinese while keeping the **Design Pack Image** 100% pixel-identical (it will be printed on the garment).
+**Production-ready interview solution for Crystal Group Hong Kong**
 
-## Challenges
+Translate garment tech pack images to Chinese while keeping the **Design Pack Image** 100% pixel-identical (it will be printed on the garment).
 
-| Challenge | Why it matters | Approach in this project |
-|-----------|----------------|--------------------------|
-| Protected Design Pack Image | Must appear exactly as designed on the garment; position varies | Heuristic region detection + mask; copy pixels unchanged |
-| Mixed layout | Tables, callouts, technical drawings, logos | OCR with bounding boxes; process only text regions |
-| Text length change | Chinese is usually shorter | Overlay inside original bounding boxes |
-| Domain terms | Fit Block, YKK, topstitch, fabric compositions | Fashion glossary + fuzzy matching |
-| OCR quality | Scans, watermarks, small text | Tesseract + confidence filter; easy to swap for PaddleOCR |
-| Reconstruction | Must not destroy line drawings | White-out only text pixels then redraw Chinese |
+Factories are global; clients and colleagues are international. This system solves the daily communication problem.
 
-## Algorithm (high-level)
+---
+
+## Challenges (面试要点)
+
+| Challenge | Impact | Solution in this project |
+|-----------|--------|--------------------------|
+| Design Pack Image must stay unchanged | Printed on garment | User mask or auto heuristic + pixel copy |
+| Position of design image varies | Different tech packs | Configurable mask or right-side heuristic |
+| Mixed content (tables + drawings + callouts) | One model is not enough | OCR with bounding boxes + selective overlay |
+| Text length changes (EN→ZH) | Layout breaks | Overlay inside original boxes |
+| Domain terminology | Generic MT is poor | Fashion glossary + pluggable DeepL/LLM |
+| Scan quality / watermarks | OCR errors | Confidence filter + preprocessing ready |
+
+## Algorithm
 
 1. Load image  
-2. Detect / mask Design Pack Image region  
-3. OCR remaining areas (bounding boxes + confidence)  
-4. Fuzzy-match + glossary translation  
-5. White-out original English text and overlay Chinese  
-6. Optionally draw protected-region outline for review  
-7. Save output image  
+2. Detect / apply Design Pack mask (user mask preferred)  
+3. OCR non-masked regions with bounding boxes  
+4. Translate (glossary / DeepL / OpenAI)  
+5. White-out original text → draw Chinese  
+6. Optionally outline protected region for review  
+7. Output final image  
+
+See `ARCHITECTURE.md` for full design.
 
 ## Quick Start
 
-### Local
+### Web Demo (best for interview)
 ```bash
 pip install -r requirements.txt
-# Place sample at samples/sample_techpack.jpg
-python app/demo.py
-# → output_translated.jpg
+python -m app.web_demo
+# http://localhost:7860
 ```
 
-### Web UI (recommended for demo)
+### API
 ```bash
-python app/web_demo.py
-# Open http://localhost:7860
+uvicorn app.api:app --reload
+# POST /translate  (returns image)
+# POST /translate/json  (returns metadata)
 ```
 
 ### Docker
 ```bash
-docker build -t techpack-translator .
-docker run -p 7860:7860 -v $(pwd):/app techpack-translator python app/web_demo.py
+docker compose up web     # Gradio on :7860
+docker compose up api     # FastAPI on :8000
 ```
 
 ## Project Structure
 ```
 app/
-  demo.py          # Core pipeline (OCR + translate + overlay)
+  core.py          # Pipeline + Translator + mask logic
+  api.py           # FastAPI production endpoint
   web_demo.py      # Gradio UI
-samples/           # Put sample_techpack.jpg here
 Dockerfile
+docker-compose.yml
 requirements.txt
 ARCHITECTURE.md
 ```
 
-## Production Upgrades (for higher score)
-- Replace glossary with DeepL / Google Translate / GPT-4o + fashion glossary
-- Switch to **PaddleOCR** for better table and Chinese support
-- Accept user-supplied mask for the Design Pack Image
-- Table structure recognition (PaddleOCR table)
-- Multi-line text fitting and font-size adaptation
-- Batch processing / API endpoint
+## Production Features
 
-## Notes
-- The Design Pack Image region is currently tuned for the provided sample.  
-  In production, use a user mask or a trained detector.
-- Translation is glossary + fuzzy match so the demo runs offline.  
-  Swap `fuzzy_translate()` for any API in one place.
+- **User-supplied mask** for exact Design Pack protection  
+- **Pluggable translation** (`glossary` / `deepl` / `openai`)  
+- **FastAPI** + **Gradio**  
+- **Docker Compose**  
+- Structured logging & JSON results  
+- Easy to swap Tesseract → PaddleOCR  
+
+## For Crystal Group Interview
+
+This demonstrates:
+- Understanding of global apparel manufacturing pain points  
+- Careful handling of print-critical graphics  
+- Clean, extensible architecture  
+- Ready-to-demo web UI and API  
+
+Add your real DeepL / Azure / OpenAI key and the system becomes fully production-ready.

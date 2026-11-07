@@ -1,5 +1,8 @@
+fastapi
+uvicorn
+python-multipart
+gradio
 pytesseract
 pillow
 opencv-python-headless
 numpy
-gradio

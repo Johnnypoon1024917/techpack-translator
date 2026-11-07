@@ -15,6 +15,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app/ ./app/
 COPY samples/ ./samples/
 
-# Default: CLI demo. Override with web UI:
-# docker run -p 7860:7860 ... python app/web_demo.py
-CMD ["python", "app/demo.py"]
+EXPOSE 7860 8000
+
+# Default: Gradio demo (best for interview)
+# Override for API: docker run ... uvicorn app.api:app --host 0.0.0.0 --port 8000
+CMD ["python", "-m", "app.web_demo"]

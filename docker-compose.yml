@@ -1,0 +1,18 @@
+version: "3.9"
+services:
+  web:
+    build: .
+    ports:
+      - "7860:7860"
+    volumes:
+      - ./samples:/app/samples
+      - ./output:/app/output
+    command: python -m app.web_demo
+
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./samples:/app/samples
+    command: uvicorn app.api:app --host 0.0.0.0 --port 8000

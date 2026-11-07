@@ -1,52 +1,76 @@
-# Architecture
+# Architecture – Tech Pack Translator
 
-## System Overview
+Designed for Crystal Group–style operations (Hong Kong HQ + global factories).
+
+## System Diagram
 
 ```
-Input Image
-    │
-    ▼
-Preprocessing (optional deskew / contrast)
-    │
-    ▼
-Design Pack Region Detection  ──► Mask (pixel-perfect copy)
-    │
-    ▼
-OCR (Tesseract / PaddleOCR) on non-masked areas
-    │
-    ▼
-Filter by confidence
-    │
-    ▼
-Domain-aware Translation (glossary + fuzzy / LLM / MT API)
-    │
-    ▼
-Text Placement (white-out + draw Chinese)
-    │
-    ▼
-Output Chinese Tech Pack Image
+                    ┌────────────────────┐
+                    │   Input Tech Pack   │
+                    │   (JPG/PNG/PDF)     │
+                    └──────────┬──────────┘
+                               │
+                    ┌──────────▼──────────┐
+                    │  Design Pack Mask   │◄── User mask (preferred)
+                    │  Detection          │    or auto heuristic
+                    └──────────┬──────────┘
+                               │
+              ┌───────────────┼───────────────┐
+              │                │                │
+     ┌───────▼────────┐      │       ┌────────▼────────┐
+     │ Protected Region│      │       │ Text Regions    │
+     │ (pixel copy)    │      │       │ OCR + bbox      │
+     └────────┬────────┘      │       └────────┬────────┘
+              │                │                │
+              │         ┌──────▼──────┐         │
+              │         │ Translator  │◄────────┘
+              │         │ glossary /  │
+              │         │ DeepL / LLM │
+              │         └──────┬──────┘
+              │                │
+              └────────┬───────┘
+                       │
+              ┌────────▼────────┐
+              │ Overlay Engine  │
+              │ white-out + CN  │
+              └────────┬────────┘
+                       │
+              ┌────────▼────────┐
+              │ Output Chinese  │
+              │ Tech Pack Image │
+              └──────────────────┘
 ```
 
 ## Key Design Decisions
 
 1. **Protected region first**  
-   Any pixel inside the Design Pack Image is never modified.  
-   Detection is currently a simple geometric heuristic; production should use a user mask or a small detector.
+   Any pixel belonging to the Design Pack Image is never modified.  
+   Production recommendation: always accept a user-drawn or pre-defined mask.
 
-2. **OCR with bounding boxes**  
-   We keep the original layout. Translation is overlaid, not a full re-layout.  
-   This preserves technical drawings and callout lines.
+2. **Overlay instead of full re-layout**  
+   Preserves technical drawings, callout lines, and table structure.
 
-3. **Pluggable translation**  
-   `fuzzy_translate()` is the only place that needs to change to plug in DeepL, Google, Azure, or an LLM.
+3. **Pluggable Translator**  
+   `Translator` class supports glossary (offline), DeepL, and OpenAI.  
+   Only one place to change for a new backend.
 
-4. **Visualization**  
-   Optional red outline around the protected region so reviewers can verify the Design Pack Image was untouched.
+4. **API + UI**  
+   FastAPI for system integration; Gradio for human review and interview demo.
 
-## Future Extensions
+5. **Observability**  
+   Structured result dict + logging for audit (important in manufacturing).
 
-- PaddleOCR table recognition for structured cells  
-- User-uploaded mask (PNG) for arbitrary Design Pack positions  
-- LLM vision model for layout understanding + translation in one pass  
-- Gradio / FastAPI production service  
-- Glossary management UI for fashion terms
+## Production Roadmap
+
+- PaddleOCR for higher table accuracy  
+- Vision LLM (GPT-4o / Claude / Qwen-VL) for layout understanding  
+- Glossary management UI for merchandisers  
+- Batch processing queue (Celery / RQ)  
+- Audit trail of every translation  
+- Support for PDF multi-page tech packs  
+
+## Crystal Group Context
+
+Tech packs move between Hong Kong design teams and factories in China, Vietnam, Bangladesh, etc.  
+Accurate Chinese translation of placement, color, quantity, and construction notes reduces errors and rework.  
+The Design Pack Image (print/embroidery artwork) must remain untouched — this is non-negotiable.
